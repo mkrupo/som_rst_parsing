@@ -444,6 +444,12 @@ def read_predictions(path: Path) -> list[dict[str, Any]]:
 
 
 def run(args: argparse.Namespace) -> None:
+    if args.output.exists():
+        raise FileExistsError(
+            f"Output path {args.output} already exists. "
+            "Existing experiment outputs are not overwritten; choose a new output path."
+        )
+
     scheme, scheme_hash = load_scheme(args.relations)
     items = load_items(args.input, scheme["relation_by_label"])
     cache = read_cache(args.cache)
@@ -471,7 +477,15 @@ def run(args: argparse.Namespace) -> None:
     args.output.parent.mkdir(parents=True, exist_ok=True)
     predictions: list[dict[str, Any]] = []
 
-    with args.output.open("w", encoding="utf-8") as destination:
+    try:
+        destination_file = args.output.open("x", encoding="utf-8")
+    except FileExistsError as exc:
+        raise FileExistsError(
+            f"Output path {args.output} already exists. "
+            "Existing experiment outputs are not overwritten; choose a new output path."
+        ) from exc
+
+    with destination_file as destination:
         with client_manager as client:
             for item, state, question_payload, cache_key, cache_entry in prepared:
                 cache_hit = cache_entry is not None

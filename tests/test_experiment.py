@@ -40,6 +40,24 @@ class ExperimentTests(unittest.TestCase):
         self.assertEqual(items[0]["gold_relation"], "cause")
         self.assertEqual(items[0]["gold_nuclearity"], "NS")
 
+    def test_real_data_diagnostic_input_validates(self) -> None:
+        items = experiment.load_items(
+            experiment.ROOT / "data" / "diagnostic.jsonl",
+            self.scheme["relation_by_label"],
+        )
+
+        self.assertEqual(len(items), 8)
+        ids = [item["id"] for item in items]
+        self.assertEqual(len(set(ids)), 8)
+        for item in items:
+            relation = item["gold_relation"]
+            nuclearity = item["gold_nuclearity"]
+            self.assertIn(relation, self.scheme["relation_by_label"])
+            self.assertIn(
+                nuclearity,
+                self.scheme["relation_by_label"][relation]["nuclearity"],
+            )
+
     def test_request_contains_two_choices_and_no_gold_fields(self) -> None:
         item = experiment.load_items(
             experiment.ROOT / "data" / "example.jsonl",
@@ -251,6 +269,7 @@ class ExperimentTests(unittest.TestCase):
 
                 output.seek(0)
                 output.truncate(0)
+                args.output = base / "predictions-from-cache.jsonl"
                 experiment.run(args)
                 second_prediction = json.loads(args.output.read_text(encoding="utf-8"))
                 serialized_outputs = (
@@ -285,6 +304,38 @@ class ExperimentTests(unittest.TestCase):
         self.assertEqual(first_report["nuclearity"]["accuracy"], 0.0)
         self.assertNotIn("offline-openrouter-secret", serialized_outputs)
         self.assertNotIn("offline-typesafe-secret", serialized_outputs)
+
+    def test_existing_prediction_output_fails_before_client_setup(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            existing_output = base / "predictions.jsonl"
+            original_contents = '{"previous":"experiment output"}\n'
+            existing_output.write_text(original_contents, encoding="utf-8")
+            args = Namespace(
+                input=experiment.ROOT / "data" / "example.jsonl",
+                output=existing_output,
+                cache=base / "cache" / "raw_responses.jsonl",
+                relations=experiment.DEFAULT_RELATIONS,
+                provider="openrouter",
+                model="jev-1.13",
+            )
+
+            with patch.object(
+                experiment,
+                "create_client",
+                side_effect=AssertionError("API client setup must not be reached"),
+            ) as create_client:
+                with self.assertRaisesRegex(
+                    FileExistsError,
+                    r"already exists.*Existing experiment outputs are not overwritten.*new output path",
+                ):
+                    experiment.run(args)
+
+            create_client.assert_not_called()
+            self.assertEqual(
+                existing_output.read_text(encoding="utf-8"),
+                original_contents,
+            )
 
 
 if __name__ == "__main__":

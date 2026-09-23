@@ -31,10 +31,30 @@
 - Evaluation uses the saved choice probabilities. Do not silently alter
   labels or reconcile a relation/nuclearity mismatch after the response.
 
+## Experiment housekeeping
+
+- Never overwrite or delete an existing experimental output unless the user
+  explicitly instructs you to.
+- Use descriptive, versioned experiment IDs such as `diagnostic_v1`.
+- Put live-run artifacts under `results/<experiment_id>/`.
+- Check existing experiment names and `docs/experiments.md` before
+  creating a new experiment.
+- Keep frozen experimental inputs and gold labels unchanged unless the user
+  explicitly asks to revise them.
+- Do not infer or invent research conclusions. Implement supplied
+  experimental designs and preserve outputs.
+- Use `README.md` for project orientation,
+  `docs/cold-start.md` for operational setup,
+  `docs/experiments.md` for the concise experiment trail, and
+  `AGENTS.md` for agent/contributor rules. Avoid duplicating detailed
+  content across them.
+
 ## Data and privacy
 
-- Do not commit ArgMicrotexts texts or annotations. Keep local corpus-derived
-  JSONL under ignored `data/argmicrotexts*.jsonl` paths.
+- Keep the full ArgMicrotexts corpus data and annotations uncommitted. Keep
+  local corpus-derived JSONL under ignored `data/argmicrotexts*.jsonl`
+  paths. Small public diagnostic excerpts may be committed when their public
+  provenance and diagnostic purpose are documented.
 - Document which corpus part, language, annotation release, segmentation, and
   document-level split a dataset uses.
 - The bundled `data/example.jsonl` is synthetic and must remain clearly

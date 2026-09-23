@@ -95,27 +95,49 @@ printf '\n'
 ## Run or evaluate
 
 ```bash
-python -m src.experiment run --provider openrouter --model jev-1.13 --input data/example.jsonl
+python -m src.experiment run --provider openrouter --model jev-1.13 --input data/example.jsonl --output results/synthetic_smoke_v2/predictions.jsonl --cache results/synthetic_smoke_v2/raw_responses.jsonl
 ```
 
 Each uncached record makes one request containing relation and nuclearity
 `Choice` questions. Raw HTTP response text is appended to
-`cache/raw_responses.jsonl` before it is parsed. Matching cache entries are
-reused on later runs. The model is pinned to `jev-1.13` in this command, and
-SDK retries are disabled. This is one synthetic live smoke request;
-`data/example.jsonl` is not a benchmark item.
+`results/synthetic_smoke_v2/raw_responses.jsonl` before it is parsed.
+Matching cache entries are reused on later runs. The model is pinned to
+`jev-1.13` in this command, and SDK retries are disabled. This is one
+synthetic live smoke request; `data/example.jsonl` is not a benchmark item.
 
-The runner writes `predictions.jsonl` and prints relation/nuclearity accuracy,
-macro-F1, NLL, multiclass Brier score, 10-bin ECE, and mean/median/p95 API
-latency. Recompute metrics from saved predictions without requesting Jev:
+The runner writes `results/synthetic_smoke_v2/predictions.jsonl` and
+prints relation/nuclearity accuracy, macro-F1, NLL, multiclass Brier score,
+10-bin ECE, and mean/median/p95 API latency. Recompute metrics from saved
+predictions without requesting Jev:
 
 ```bash
-python -m src.experiment evaluate --predictions predictions.jsonl
+python -m src.experiment evaluate --predictions results/synthetic_smoke_v2/predictions.jsonl
 ```
 
 Use `--output`, `--cache`, `--relations`, `--provider`, and `--model` to change
 those paths or settings. Run `python -m src.experiment --help` for the
 command interface.
+
+## Real-data diagnostic smoke suite
+
+`data/diagnostic.jsonl` contains eight manually checked local relation and
+nuclearity cases from the public ArgMicrotexts RST corpus. It is a diagnostic
+smoke suite, **not a benchmark**: the small, selected set does not support a
+performance claim. The source RS3 files, in record order, are
+`micro_b059.rs3`, `micro_b007.rs3`, `micro_k031.rs3`,
+`micro_k002.rs3`, `micro_b041.rs3`, `micro_d21.rs3`,
+`micro_d18.rs3`, and `micro_b020.rs3`.
+
+After setting `OPENROUTER_API_KEY`, run the eight cases manually:
+
+    python -m src.experiment run --provider openrouter --model jev-1.13 --input data/diagnostic.jsonl --output results/diagnostic_v1/predictions.jsonl --cache results/diagnostic_v1/raw_responses.jsonl
+
+The first run makes one request for each uncached record. It writes predictions
+to `results/diagnostic_v1/predictions.jsonl` and raw responses to
+`results/diagnostic_v1/raw_responses.jsonl`. Each new experiment should
+use a new versioned result directory; the runner fails if a prediction path
+already exists. The offline test suite only validates the local records and
+makes no requests.
 
 ## Later ArgMicrotexts experiments
 

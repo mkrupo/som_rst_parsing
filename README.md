@@ -18,6 +18,7 @@ definitions live in [`configs/rst_relations.json`](configs/rst_relations.json).
 
 - [Cold start and experiment workflow](docs/cold-start.md)
 - [ArgMicrotexts task profile and local data format](docs/argmicrotexts.md)
+- [Experiment history and result layout](docs/experiments.md)
 - [Optional direct TypeSafe browser demo](docs/playground.md)
 - [Contributor and agent instructions](AGENTS.md)
 
@@ -45,7 +46,7 @@ for pricing before running it:
 read -rsp "OpenRouter API key: " OPENROUTER_API_KEY
 export OPENROUTER_API_KEY
 printf '\n'
-.venv/bin/python -m src.experiment run --provider openrouter --model jev-1.13 --input data/example.jsonl
+.venv/bin/python -m src.experiment run --provider openrouter --model jev-1.13 --input data/example.jsonl --output results/synthetic_smoke_v2/predictions.jsonl --cache results/synthetic_smoke_v2/raw_responses.jsonl
 ```
 
 The included `data/example.jsonl` row is synthetic. Its prediction and metrics
@@ -53,6 +54,11 @@ are a smoke check, not an evaluation result. Corpus files are not included;
 see [the data guide](docs/argmicrotexts.md). Local ArgMicrotexts JSONL files
 are ignored by Git.
 
-The runner writes `predictions.jsonl`, caches raw responses under
-`cache/raw_responses.jsonl`, and prints accuracy, macro-F1, NLL, Brier score,
-10-bin ECE, and latency summaries. It does not train a model.
+Exploratory live runs use descriptive, versioned directories under
+`results/`; existing prediction outputs are never overwritten.
+
+The command above writes predictions to
+`results/synthetic_smoke_v2/predictions.jsonl` and raw responses to
+`results/synthetic_smoke_v2/raw_responses.jsonl`. It prints accuracy,
+macro-F1, NLL, Brier score, 10-bin ECE, and latency summaries. It does not
+train a model.
