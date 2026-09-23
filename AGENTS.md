@@ -22,8 +22,10 @@
 - Input rows contain `document_context`, `span_a`, `span_b`, `gold_relation`,
   and `gold_nuclearity`. Gold fields are only for validation/evaluation; never
   include them in the Jev state.
-- Keep `TYPESAFE_API_KEY` as the only credential source. Do not add key files,
-  command-line key options, or browser credentials.
+- The default OpenRouter provider reads credentials only from
+  `OPENROUTER_API_KEY`; optional direct TypeSafe access reads only from
+  `TYPESAFE_API_KEY`. Do not add key files or command-line key options, and
+  never serialize credentials.
 - Preserve each raw response before parsing it. Keep retries disabled unless
   the experiment contract is deliberately revised and documented.
 - Evaluation uses the saved choice probabilities. Do not silently alter

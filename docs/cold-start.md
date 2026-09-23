@@ -39,6 +39,10 @@ separate manual check and makes a live request.
 
 ## Understand the task
 
+This repository tests local RST relation and nuclearity decisions for two
+supplied spans. Unlike the [end-to-end pipeline in `llm_rst_parsing`](https://github.com/mkrupo/llm_rst_parsing),
+it does not generate complete RST trees.
+
 The input to Jev is a document context and two ordered spans. The model makes
 two separate closed-set decisions in one request:
 
@@ -50,9 +54,8 @@ satellite; `SN` means A is satellite and B is nucleus; `NN` means both are
 nuclei. The label inventory and definitions are in
 [`../configs/rst_relations.json`](../configs/rst_relations.json).
 
-This is pairwise classification. It predicts neither EDU boundaries nor a
-complete document tree. The bundled row in `data/example.jsonl` is synthetic;
-it is not an ArgMicrotexts sample.
+The bundled row in `data/example.jsonl` is synthetic; it is not an
+ArgMicrotexts sample.
 
 ## Prepare an input file
 
@@ -75,26 +78,32 @@ each row ID with its source document ID.
 
 ## Set the API key when ready
 
-The runner reads credentials only from `TYPESAFE_API_KEY`. Do not put the key
-in a source file or input JSONL.
+The default provider is OpenRouter and reads credentials only from
+`OPENROUTER_API_KEY`. Do not put the key in source files, input JSONL, or run
+arguments. The optional direct TypeSafe provider uses `TYPESAFE_API_KEY`.
+OpenRouter's [TypeSafe Jev guide](https://openrouter.ai/blog/insights/what-is-jev/)
+documents the SDK setup and Choice response shape used here.
+Check the [OpenRouter TypeSafe model page](https://openrouter.ai/typesafe)
+for current pricing before making a live request.
 
 ```bash
-read -rsp "TypeSafe API key: " TYPESAFE_API_KEY
-export TYPESAFE_API_KEY
+read -rsp "OpenRouter API key: " OPENROUTER_API_KEY
+export OPENROUTER_API_KEY
 printf '\n'
 ```
 
 ## Run or evaluate
 
 ```bash
-python -m src.experiment run --input data/argmicrotexts_test.jsonl
+python -m src.experiment run --provider openrouter --model jev-1.13 --input data/example.jsonl
 ```
 
 Each uncached record makes one request containing relation and nuclearity
 `Choice` questions. Raw HTTP response text is appended to
 `cache/raw_responses.jsonl` before it is parsed. Matching cache entries are
-reused on later runs. The default model is `jev-latest`; SDK retries are
-disabled.
+reused on later runs. The model is pinned to `jev-1.13` in this command, and
+SDK retries are disabled. This is one synthetic live smoke request;
+`data/example.jsonl` is not a benchmark item.
 
 The runner writes `predictions.jsonl` and prints relation/nuclearity accuracy,
 macro-F1, NLL, multiclass Brier score, 10-bin ECE, and mean/median/p95 API
@@ -104,13 +113,22 @@ latency. Recompute metrics from saved predictions without requesting Jev:
 python -m src.experiment evaluate --predictions predictions.jsonl
 ```
 
-Use `--output`, `--cache`, `--relations`, and `--model` to change those paths
-or settings. Run `python -m src.experiment --help` for the command interface.
+Use `--output`, `--cache`, `--relations`, `--provider`, and `--model` to change
+those paths or settings. Run `python -m src.experiment --help` for the
+command interface.
 
-## Try the browser demo first
+## Later ArgMicrotexts experiments
 
-To inspect the task through a web interface before setting up API access, use
-the copyable instructions in [`playground.md`](playground.md). The demo uses
-the official TypeSafe console and a synthetic example. It is a live request
-under your TypeSafe account, not an evaluation run; check the account's credits
-and pricing before clicking Run.
+The 14-document corpus subset is not bundled, and this repository does not
+yet extract pair rows from its RST annotations. Before evaluation, define and
+document that conversion, then prepare local JSONL as described in the
+[ArgMicrotexts task profile](argmicrotexts.md). Use the same rows for Jev and
+LLM comparisons; do not treat the synthetic smoke result as benchmark
+evidence.
+
+## Optional direct TypeSafe browser demo
+
+The copyable instructions in [`playground.md`](playground.md) use the direct
+TypeSafe console and require a TypeSafe account. They are separate from the
+default OpenRouter API path. The Playground request is live and is not an
+evaluation run.

@@ -26,6 +26,17 @@ REQUIRED_FIELDS = (
 NUCLEARITY_LABELS = ("NS", "SN", "NN")
 ECE_BINS = 10
 NLL_EPSILON = 1e-15
+DEFAULT_MODEL = "jev-1.13"
+PROVIDERS = {
+    "openrouter": {
+        "api_key_env": "OPENROUTER_API_KEY",
+        "base_url": "https://openrouter.ai/api",
+    },
+    "typesafe": {
+        "api_key_env": "TYPESAFE_API_KEY",
+        "base_url": "https://api.typesafe.ai",
+    },
+}
 
 
 def canonical_json(value: Any) -> str:
@@ -34,6 +45,24 @@ def canonical_json(value: Any) -> str:
 
 def sha256_text(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def create_client(provider: str) -> Any:
+    if provider not in PROVIDERS:
+        raise ValueError(f"Unsupported provider {provider!r}.")
+    provider_config = PROVIDERS[provider]
+    api_key_env = provider_config["api_key_env"]
+    api_key = os.environ.get(api_key_env)
+    if not api_key:
+        raise RuntimeError(f"Set {api_key_env} in the environment before making Jev requests.")
+
+    from typesafe_sdk import RetryPolicy, TypeSafeClient
+
+    return TypeSafeClient(
+        api_key=api_key,
+        base_url=provider_config["base_url"],
+        retry=RetryPolicy(max_retries=0),
+    )
 
 
 def load_scheme(path: Path) -> tuple[dict[str, Any], str]:
@@ -138,6 +167,7 @@ def load_items(path: Path, relation_by_label: dict[str, dict[str, Any]]) -> list
 def make_request(
     item: dict[str, Any],
     scheme: dict[str, Any],
+    provider: str,
     model: str,
     scheme_hash: str,
 ) -> tuple[dict[str, Any], dict[str, Any], str]:
@@ -182,6 +212,7 @@ def make_request(
     cache_key = sha256_text(
         canonical_json(
             {
+                "provider": provider,
                 "input_id": item["id"],
                 "request": request_payload,
                 "scheme_sha256": scheme_hash,
@@ -276,6 +307,7 @@ def prediction_record(
     item: dict[str, Any],
     parsed: dict[str, Any],
     *,
+    provider: str,
     model: str,
     cache_key: str,
     cache_entry: dict[str, Any],
@@ -287,6 +319,7 @@ def prediction_record(
     nuclearity = parsed["answers"]["nuclearity"]
     return {
         "input_id": item["id"],
+        "provider": provider,
         "model": model,
         "response_model": parsed.get("response_model"),
         "scheme": scheme_name,
@@ -416,20 +449,24 @@ def run(args: argparse.Namespace) -> None:
     cache = read_cache(args.cache)
     prepared = []
     for item in items:
-        state, question_payload, cache_key = make_request(item, scheme, args.model, scheme_hash)
+        state, question_payload, cache_key = make_request(
+            item, scheme, args.provider, args.model, scheme_hash
+        )
         prepared.append((item, state, question_payload, cache_key, cache.get(cache_key)))
 
     needs_api = any(cache_entry is None for _, _, _, _, cache_entry in prepared)
     client_manager = nullcontext(None)
     if needs_api:
-        if not os.environ.get("TYPESAFE_API_KEY"):
-            raise RuntimeError("Set TYPESAFE_API_KEY in the environment before making Jev requests.")
         try:
-            from typesafe_sdk import Choice, RetryPolicy, TypeSafeClient, TypeSafeAPIError
+            from typesafe_sdk import Choice, TypeSafeAPIError
 
-            client_manager = TypeSafeClient(model=args.model, retry=RetryPolicy(max_retries=0))
+            client_manager = create_client(args.provider)
+        except RuntimeError:
+            raise
         except Exception as exc:
-            raise RuntimeError(f"Could not initialize the TypeSafe SDK client: {exc}") from exc
+            raise RuntimeError(
+                f"Could not initialize the TypeSafe SDK client ({type(exc).__name__})."
+            ) from exc
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     predictions: list[dict[str, Any]] = []
@@ -445,7 +482,11 @@ def run(args: argparse.Namespace) -> None:
                     }
                     started = time.perf_counter()
                     try:
-                        response = client.system_one(state=state, questions=typed_questions)
+                        response = client.system_one(
+                            state=state,
+                            questions=typed_questions,
+                            model=args.model,
+                        )
                     except TypeSafeAPIError as exc:
                         latency_ms = (time.perf_counter() - started) * 1000
                         append_jsonl(
@@ -488,11 +529,14 @@ def run(args: argparse.Namespace) -> None:
                     cache_entry = {
                         "cache_key": cache_key,
                         "status": "success",
+                        "provider": args.provider,
                         "model": args.model,
                         "scheme_sha256": scheme_hash,
                         "api_latency_ms": latency_ms,
                         "http_status": response.raw_http_response.status_code,
-                        "request_id": response.request_id,
+                        "request_id": response.raw_http_response.headers.get(
+                            "x-typesafe-request-id"
+                        ),
                         "raw_response_text": response.raw_http_response.text,
                         "recorded_at_utc": datetime.now(timezone.utc).isoformat(),
                     }
@@ -507,6 +551,7 @@ def run(args: argparse.Namespace) -> None:
                 record = prediction_record(
                     item,
                     parsed,
+                    provider=args.provider,
                     model=args.model,
                     cache_key=cache_key,
                     cache_entry=cache_entry,
@@ -530,7 +575,9 @@ def evaluate(args: argparse.Namespace) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run or evaluate the minimal Jev RST experiment.")
+    parser = argparse.ArgumentParser(
+        description="Run or evaluate the minimal zero-shot Jev RST span-decision experiment."
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     run_parser = subparsers.add_parser("run", help="Classify each input instance with Jev.")
@@ -538,7 +585,13 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--output", type=Path, default=Path("predictions.jsonl"))
     run_parser.add_argument("--cache", type=Path, default=Path("cache/raw_responses.jsonl"))
     run_parser.add_argument("--relations", type=Path, default=DEFAULT_RELATIONS)
-    run_parser.add_argument("--model", default="jev-latest")
+    run_parser.add_argument(
+        "--provider",
+        choices=tuple(PROVIDERS),
+        default="openrouter",
+        help="API provider (default: openrouter).",
+    )
+    run_parser.add_argument("--model", default=DEFAULT_MODEL)
     run_parser.set_defaults(func=run)
 
     evaluate_parser = subparsers.add_parser("evaluate", help="Evaluate an existing predictions JSONL file.")

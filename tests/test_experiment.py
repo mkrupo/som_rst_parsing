@@ -46,7 +46,7 @@ class ExperimentTests(unittest.TestCase):
             self.scheme["relation_by_label"],
         )[0]
         state, questions, cache_key = experiment.make_request(
-            item, self.scheme, "jev-latest", self.scheme_hash
+            item, self.scheme, "openrouter", "jev-1.13", self.scheme_hash
         )
 
         self.assertEqual(set(questions), {"relation", "nuclearity"})
@@ -54,6 +54,42 @@ class ExperimentTests(unittest.TestCase):
         self.assertNotIn("gold_relation", state)
         self.assertNotIn("gold_nuclearity", state)
         self.assertEqual(len(cache_key), 64)
+
+    def test_provider_cli_defaults_are_pinned(self) -> None:
+        args = experiment.build_parser().parse_args(
+            ["run", "--input", "data/example.jsonl"]
+        )
+        self.assertEqual(args.provider, "openrouter")
+        self.assertEqual(args.model, "jev-1.13")
+
+    def test_provider_client_configuration_needs_no_network(self) -> None:
+        openrouter_key = "offline-openrouter-secret"
+        with (
+            patch.dict(os.environ, {"OPENROUTER_API_KEY": openrouter_key}),
+            patch("typesafe_sdk.TypeSafeClient") as client_class,
+        ):
+            result = experiment.create_client("openrouter")
+
+        self.assertIs(result, client_class.return_value)
+        openrouter_config = client_class.call_args.kwargs
+        self.assertEqual(openrouter_config["api_key"], openrouter_key)
+        self.assertEqual(openrouter_config["base_url"], "https://openrouter.ai/api")
+        self.assertEqual(openrouter_config["retry"].max_retries, 0)
+
+        typesafe_key = "offline-typesafe-secret"
+        with (
+            patch.dict(os.environ, {"TYPESAFE_API_KEY": typesafe_key}),
+            patch("typesafe_sdk.TypeSafeClient") as client_class,
+        ):
+            experiment.create_client("typesafe")
+        typesafe_config = client_class.call_args.kwargs
+        self.assertEqual(typesafe_config["api_key"], typesafe_key)
+        self.assertEqual(typesafe_config["base_url"], "https://api.typesafe.ai")
+        self.assertEqual(typesafe_config["retry"].max_retries, 0)
+
+        with patch.dict(os.environ, {"TYPESAFE_API_KEY": typesafe_key}, clear=True):
+            with self.assertRaisesRegex(RuntimeError, "OPENROUTER_API_KEY"):
+                experiment.create_client("openrouter")
 
     def test_playground_question_criteria_match_config(self) -> None:
         guide = (experiment.ROOT / "docs" / "playground.md").read_text(encoding="utf-8")
@@ -105,27 +141,30 @@ class ExperimentTests(unittest.TestCase):
 
     def test_runner_caches_raw_response_and_reuses_it(self) -> None:
         probabilities = {label: 0.0 for label in self.relation_labels}
-        probabilities["cause"] = 1.0
+        probabilities["cause"] = 0.8
+        probabilities["result"] = 0.2
         response_body = {
-            "model": "jev-1.13.0",
+            "model": "typesafe/jev-1.13-20260917",
+            "id": "gen-dec-offline-test",
+            "provider": "TypeSafe",
             "answers": {
                 "relation": {
                     "type": "choice",
                     "choice": "cause",
-                    "confidence": 1.0,
+                    "confidence": 0.8,
                     "probabilities": probabilities,
                 },
                 "nuclearity": {
                     "type": "choice",
-                    "choice": "NS",
-                    "confidence": 1.0,
-                    "probabilities": {"NS": 1.0, "SN": 0.0, "NN": 0.0},
+                    "choice": "NN",
+                    "confidence": 0.6,
+                    "probabilities": {"NS": 0.3, "SN": 0.1, "NN": 0.6},
                 },
             },
             "usage": {"input_tokens": 10, "output_tokens": 10},
         }
         raw_response_text = json.dumps(response_body)
-        calls: list[tuple[dict[str, object], dict[str, object]]] = []
+        calls: list[tuple[dict[str, object], dict[str, object], str]] = []
 
         class FakeChoice:
             def __init__(self, *, instructions: str, criteria: dict[str, str]) -> None:
@@ -139,14 +178,21 @@ class ExperimentTests(unittest.TestCase):
         class FakeHTTPResponse:
             status_code = 200
             text = raw_response_text
+            headers: dict[str, str] = {}
 
         class FakeResponse:
             raw_http_response = FakeHTTPResponse()
-            request_id = "offline-test-request"
 
         class FakeClient:
-            def __init__(self, *, model: str, retry: FakeRetryPolicy) -> None:
-                self.model = model
+            def __init__(
+                self,
+                *,
+                api_key: str,
+                base_url: str,
+                retry: FakeRetryPolicy,
+            ) -> None:
+                self_outer.assertEqual(api_key, "offline-openrouter-secret")
+                self_outer.assertEqual(base_url, "https://openrouter.ai/api")
                 self.retry = retry
 
             def __enter__(self) -> FakeClient:
@@ -160,9 +206,11 @@ class ExperimentTests(unittest.TestCase):
                 *,
                 state: dict[str, str],
                 questions: dict[str, FakeChoice],
+                model: str,
             ) -> FakeResponse:
-                calls.append((state, questions))
+                calls.append((state, questions, model))
                 self_outer.assertEqual(set(questions), {"relation", "nuclearity"})
+                self_outer.assertEqual(model, "jev-1.13")
                 self_outer.assertEqual(self.retry.max_retries, 0)
                 return FakeResponse()
 
@@ -179,13 +227,21 @@ class ExperimentTests(unittest.TestCase):
                 output=base / "predictions.jsonl",
                 cache=base / "cache" / "raw_responses.jsonl",
                 relations=experiment.DEFAULT_RELATIONS,
-                model="jev-latest",
+                provider="openrouter",
+                model="jev-1.13",
             )
             self_outer = self
             output = io.StringIO()
             with (
                 patch.dict(sys.modules, {"typesafe_sdk": fake_sdk}),
-                patch.dict(os.environ, {"TYPESAFE_API_KEY": "offline-placeholder"}),
+                patch.dict(
+                    os.environ,
+                    {
+                        "OPENROUTER_API_KEY": "offline-openrouter-secret",
+                        "TYPESAFE_API_KEY": "offline-typesafe-secret",
+                    },
+                    clear=True,
+                ),
                 contextlib.redirect_stdout(output),
             ):
                 experiment.run(args)
@@ -197,15 +253,38 @@ class ExperimentTests(unittest.TestCase):
                 output.truncate(0)
                 experiment.run(args)
                 second_prediction = json.loads(args.output.read_text(encoding="utf-8"))
+                serialized_outputs = (
+                    args.output.read_text(encoding="utf-8")
+                    + args.cache.read_text(encoding="utf-8")
+                    + output.getvalue()
+                )
 
         self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][2], "jev-1.13")
         self.assertEqual(json.loads(cached["raw_response_text"]), response_body)
+        self.assertEqual(cached["provider"], "openrouter")
+        self.assertIsNone(cached["request_id"])
         self.assertEqual(first_prediction["predicted_relation"], "cause")
-        self.assertEqual(first_prediction["predicted_nuclearity"], "NS")
+        self.assertEqual(first_prediction["predicted_nuclearity"], "NN")
+        self.assertEqual(first_prediction["provider"], "openrouter")
+        self.assertEqual(first_prediction["model"], "jev-1.13")
+        self.assertEqual(first_prediction["response_model"], "typesafe/jev-1.13-20260917")
+        self.assertEqual(
+            first_prediction["relation_probabilities"],
+            probabilities,
+        )
+        self.assertEqual(
+            first_prediction["nuclearity_probabilities"],
+            {"NS": 0.3, "SN": 0.1, "NN": 0.6},
+        )
+        self.assertEqual(first_prediction["gold_relation"], "cause")
+        self.assertEqual(first_prediction["gold_nuclearity"], "NS")
         self.assertFalse(first_prediction["cache_hit"])
         self.assertTrue(second_prediction["cache_hit"])
         self.assertEqual(first_report["relation"]["accuracy"], 1.0)
-        self.assertEqual(first_report["nuclearity"]["accuracy"], 1.0)
+        self.assertEqual(first_report["nuclearity"]["accuracy"], 0.0)
+        self.assertNotIn("offline-openrouter-secret", serialized_outputs)
+        self.assertNotIn("offline-typesafe-secret", serialized_outputs)
 
 
 if __name__ == "__main__":

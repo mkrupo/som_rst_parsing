@@ -1,5 +1,8 @@
 # Try the task in the official Jev playground
 
+This optional page describes the direct TypeSafe Playground. The default
+OpenRouter setup for this repository is in [the cold-start guide](cold-start.md).
+
 This is a synthetic smoke example for the task shape used by the runner: one
 ordered span pair and two Choice questions evaluated in one request. It uses
 the full 34-label relation inventory from
@@ -38,8 +41,8 @@ field only, paste the same three fields as readable text.
 Add two questions named relation and nuclearity, each with type Choice. If the
 Playground exposes a JSON editor for questions, paste this object as the
 questions map (without an outer request wrapper). Otherwise enter the same
-instructions and criteria through its question controls. Select Jev's default
-model, jev-latest, if the UI asks for a model.
+instructions and criteria through its question controls. If the UI asks for a
+model, select the pinned `jev-1.13` model.
 
     {
       "relation": {
@@ -113,5 +116,6 @@ response cache, prediction writer, or evaluation code.
 The repository's included input row is also synthetic. Before running the
 14-document benchmark, prepare local JSONL pair rows from the documents listed
 in [the ArgMicrotexts task profile](argmicrotexts.md). Then follow the
-[runner guide](cold-start.md). A local runner request uses your account's
-TYPESAFE_API_KEY and may consume credits.
+[runner guide](cold-start.md). The repository's default runner uses
+`OPENROUTER_API_KEY`; one request is sent per uncached input row and may incur
+OpenRouter charges.
