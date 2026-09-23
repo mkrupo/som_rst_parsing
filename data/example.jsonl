@@ -1,0 +1,1 @@
+{"id":"example-1","document_context":"The road was wet. It had rained all night.","span_a":"The road was wet.","span_b":"It had rained all night.","gold_relation":"cause","gold_nuclearity":"NS"}

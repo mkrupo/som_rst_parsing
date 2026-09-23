@@ -1,0 +1,54 @@
+# Contributor and agent guide
+
+## Project boundary
+
+- Treat this repository as the complete project. Keep documentation and
+  examples self-contained and suitable for a public repository.
+- Keep changes in this repository. Do not rely on machine-specific paths,
+  private notes, or files outside this checkout.
+- Keep this experiment small: Python 3.11, `typesafe-sdk`, JSONL input/output,
+  and direct functions are enough. Do not add training, a web service, a
+  workflow framework, or new abstraction layers without a concrete need.
+
+## Experiment contract
+
+- The task is zero-shot classification of an ordered pair of spans with one
+  RST relation and one nuclearity prediction.
+- Send both predictions as `Choice` questions in the same `system_one` request
+  for each uncached input record.
+- Read the canonical labels and definitions from
+  `configs/rst_relations.json`. Do not maintain a second runtime inventory in
+  Python.
+- Input rows contain `document_context`, `span_a`, `span_b`, `gold_relation`,
+  and `gold_nuclearity`. Gold fields are only for validation/evaluation; never
+  include them in the Jev state.
+- Keep `TYPESAFE_API_KEY` as the only credential source. Do not add key files,
+  command-line key options, or browser credentials.
+- Preserve each raw response before parsing it. Keep retries disabled unless
+  the experiment contract is deliberately revised and documented.
+- Evaluation uses the saved choice probabilities. Do not silently alter
+  labels or reconcile a relation/nuclearity mismatch after the response.
+
+## Data and privacy
+
+- Do not commit ArgMicrotexts texts or annotations. Keep local corpus-derived
+  JSONL under ignored `data/argmicrotexts*.jsonl` paths.
+- Document which corpus part, language, annotation release, segmentation, and
+  document-level split a dataset uses.
+- The bundled `data/example.jsonl` is synthetic and must remain clearly
+  labeled as such.
+
+## Changes and checks
+
+- Keep public-facing docs accurate, self-contained, and linked to public
+  sources where needed. Avoid references to private conversations or local
+  documents.
+- For changes to the relation inventory, check that every relation has a
+  definition and valid nuclearity set, and update the playground example if
+  label semantics changed.
+- Do not make live Jev calls during routine edits. A live request needs an
+  explicit user request.
+- Keep automated checks in the Python standard library's `unittest`; do not
+  add a separate test framework without a concrete need.
+- Offline tests must use fake or mock responses. Never trigger a paid model
+  request as part of routine verification.
