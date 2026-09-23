@@ -58,6 +58,28 @@ class ExperimentTests(unittest.TestCase):
                 self.scheme["relation_by_label"][relation]["nuclearity"],
             )
 
+    def test_causal_direction_input_validates(self) -> None:
+        items = experiment.load_items(
+            experiment.ROOT / "data" / "causal_direction.jsonl",
+            self.scheme["relation_by_label"],
+        )
+
+        self.assertEqual(len(items), 8)
+        self.assertTrue(all(item["gold_relation"] == "cause" for item in items))
+        nuclearities = [item["gold_nuclearity"] for item in items]
+        self.assertEqual(nuclearities.count("NS"), 4)
+        self.assertEqual(nuclearities.count("SN"), 4)
+        ids = [item["id"] for item in items]
+        self.assertEqual(len(set(ids)), 8)
+        for item in items:
+            relation = item["gold_relation"]
+            nuclearity = item["gold_nuclearity"]
+            self.assertIn(relation, self.scheme["relation_by_label"])
+            self.assertIn(
+                nuclearity,
+                self.scheme["relation_by_label"][relation]["nuclearity"],
+            )
+
     def test_request_contains_two_choices_and_no_gold_fields(self) -> None:
         item = experiment.load_items(
             experiment.ROOT / "data" / "example.jsonl",
