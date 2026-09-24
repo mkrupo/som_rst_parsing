@@ -49,8 +49,10 @@ The config assigns nuclearity this way:
 `unstated-relation` is a fallback when a relation is clear but none of the
 more specific labels applies. `evaluation-s` and `evaluation-n` encode which
 side is evaluated. `cause` and `result` distinguish the satellite's causal
-direction relative to the nucleus. Definitions are maintained in the config
-file and included in the Jev question criteria.
+direction relative to the nucleus. The natural-language definitions in the
+config are operational criteria used by this experiment; they are not claimed
+to be verbatim official ArgMicrotexts annotation guidelines. They are included
+in the Jev question criteria.
 
 ## Pair format
 
@@ -64,10 +66,12 @@ Each JSONL row describes one labeled relation between two supplied spans:
 For traceability, prefix each row's `id` with its document ID, for example
 `micro_b001_original:pair-001`. The runner uses gold fields only to validate
 and evaluate; it does not send them to Jev. This repo currently defines the
-label scheme and input contract, but does not include corpus files or a
-pair-extraction utility. Before scoring, record exactly how tree relations
-become ordered span pairs and how any multi-child relation is handled. Use the
-same resulting pair rows for every model being compared.
+label scheme and input contract. It also includes a local utility for
+extracting direct EDU-to-EDU `cause` attachments from RS3; it does not extract
+other relations or group-attached relations. Record the extraction policy for
+other relations and multi-child attachments before scoring them. Use the same
+resulting pair rows for every model being compared. The ignored output path
+`data/argmicrotexts_cause_direct.jsonl` is recommended for this extraction.
 
 The task is pairwise classification. It does not predict EDU boundaries,
 serialize a complete RST tree, or apply a structural decoder.

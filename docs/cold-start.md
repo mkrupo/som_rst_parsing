@@ -57,6 +57,44 @@ nuclei. The label inventory and definitions are in
 The bundled row in `data/example.jsonl` is synthetic; it is not an
 ArgMicrotexts sample.
 
+## How a Jev call works
+
+This project uses Jev as a non-generative decision model: it selects from
+defined options rather than writing a response in free-form prose. A request
+contains a `state` (document context, span A, and span B) and one or more typed
+questions. “Typed” means the permitted answer shape and options are defined
+before inference. A `Choice` question has natural-language instructions and a
+fixed map from option names to natural-language criteria.
+
+The response contains a selected option, a probability for every permitted
+option, and an explicit confidence value. In `independent` mode, this project
+sends two `Choice` questions, for relation and nuclearity. In `joint` mode,
+it sends one `Choice` over the 61 valid relation/nuclearity combinations
+generated from `configs/rst_relations.json`. Gold labels are used locally for
+validation and evaluation; they are never sent to Jev.
+
+```text
+state:
+  document_context: ...
+  span_a: ...
+  span_b: ...
+
+Choice:
+  instructions: choose the best relation+nuclearity analysis
+  criteria:
+    cause_NS: <cause definition + NS definition>
+    cause_SN: <cause definition + SN definition>
+    ...
+
+response:
+  choice: result_NS
+  probabilities: {...}
+  confidence: ...
+```
+
+See the [OpenRouter TypeSafe Jev guide](https://openrouter.ai/blog/insights/what-is-jev/)
+for more about the API and Choice response.
+
 ## Prepare an input file
 
 Create UTF-8 JSONL with one record per labeled pair. The required fields are:
