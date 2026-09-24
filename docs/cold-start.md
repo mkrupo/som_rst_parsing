@@ -117,6 +117,8 @@ python -m src.experiment evaluate --predictions results/synthetic_smoke_v2/predi
 Use `--output`, `--cache`, `--relations`, `--provider`, and `--model` to change
 those paths or settings. Run `python -m src.experiment --help` for the
 command interface.
+The `--formulation` option defaults to `independent` (the existing two questions);
+`--formulation joint` uses one Choice over valid configured relation/nuclearity pairs.
 
 ## Real-data diagnostic smoke suite
 

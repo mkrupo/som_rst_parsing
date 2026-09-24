@@ -27,6 +27,7 @@ NUCLEARITY_LABELS = ("NS", "SN", "NN")
 ECE_BINS = 10
 NLL_EPSILON = 1e-15
 DEFAULT_MODEL = "jev-1.13"
+FORMULATIONS = ("independent", "joint")
 PROVIDERS = {
     "openrouter": {
         "api_key_env": "OPENROUTER_API_KEY",
@@ -164,60 +165,101 @@ def load_items(path: Path, relation_by_label: dict[str, dict[str, Any]]) -> list
     return items
 
 
+def joint_label_inventory(scheme: dict[str, Any]) -> dict[str, tuple[str, str]]:
+    inventory: dict[str, tuple[str, str]] = {}
+    for relation_label, relation in scheme["relation_by_label"].items():
+        for nuclearity_label in relation["nuclearity"]:
+            joint_label = f"{relation_label}_{nuclearity_label}"
+            if joint_label in inventory:
+                raise ValueError(f"Duplicate joint relation/nuclearity label: {joint_label!r}.")
+            inventory[joint_label] = (relation_label, nuclearity_label)
+    return inventory
+
+
 def make_request(
     item: dict[str, Any],
     scheme: dict[str, Any],
     provider: str,
     model: str,
     scheme_hash: str,
+    formulation: str = "independent",
 ) -> tuple[dict[str, Any], dict[str, Any], str]:
-    relation_criteria: dict[str, str] = {}
-    for label, relation in scheme["relation_by_label"].items():
-        definition = relation["definition"]
-        if relation["nuclearity"] == ["NN"]:
-            definition += " This relation is multinuclear and must use NN."
-        else:
-            definition += " This relation is mononuclear and must use NS or SN."
-        relation_criteria[label] = definition
+    if formulation not in FORMULATIONS:
+        raise ValueError(f"Unsupported formulation {formulation!r}.")
 
-    nuclearity_criteria = {
-        label: entry["definition"]
-        for label, entry in scheme["nuclearity_by_label"].items()
-    }
     state = {
         "document_context": item["document_context"],
         "span_a": item["span_a"],
         "span_b": item["span_b"],
     }
-    question_payload = {
-        "relation": {
-            "type": "choice",
-            "instructions": (
-                f"Choose exactly one {scheme['scheme']} RST relation that best describes the relation "
-                "between span A and span B. Use the supplied relation definitions. "
-                "Span A precedes span B in the document."
-            ),
-            "criteria": relation_criteria,
-        },
-        "nuclearity": {
-            "type": "choice",
-            "instructions": (
-                "Choose the nuclearity of the relation between the same ordered spans. "
-                "Span A precedes span B in the document. Select NN for an equal-weight multinuclear relation."
-            ),
-            "criteria": nuclearity_criteria,
-        },
-    }
-    request_payload = {"model": model, "state": state, "questions": question_payload}
-    cache_key = sha256_text(
-        canonical_json(
-            {
-                "provider": provider,
-                "input_id": item["id"],
-                "request": request_payload,
-                "scheme_sha256": scheme_hash,
+
+    if formulation == "independent":
+        relation_criteria: dict[str, str] = {}
+        for label, relation in scheme["relation_by_label"].items():
+            definition = relation["definition"]
+            if relation["nuclearity"] == ["NN"]:
+                definition += " This relation is multinuclear and must use NN."
+            else:
+                definition += " This relation is mononuclear and must use NS or SN."
+            relation_criteria[label] = definition
+
+        nuclearity_criteria = {
+            label: entry["definition"]
+            for label, entry in scheme["nuclearity_by_label"].items()
+        }
+        question_payload = {
+            "relation": {
+                "type": "choice",
+                "instructions": (
+                    f"Choose exactly one {scheme['scheme']} RST relation that best describes the relation "
+                    "between span A and span B. Use the supplied relation definitions. "
+                    "Span A precedes span B in the document."
+                ),
+                "criteria": relation_criteria,
+            },
+            "nuclearity": {
+                "type": "choice",
+                "instructions": (
+                    "Choose the nuclearity of the relation between the same ordered spans. "
+                    "Span A precedes span B in the document. Select NN for an equal-weight multinuclear relation."
+                ),
+                "criteria": nuclearity_criteria,
+            },
+        }
+    else:
+        inventory = joint_label_inventory(scheme)
+        joint_criteria = {
+            joint_label: (
+                f"{scheme['relation_by_label'][relation_label]['definition']} "
+                f"{scheme['nuclearity_by_label'][nuclearity_label]['definition']}"
+            )
+            for joint_label, (relation_label, nuclearity_label) in inventory.items()
+        }
+        question_payload = {
+            "relation_nuclearity": {
+                "type": "choice",
+                "instructions": (
+                    "Choose exactly one valid relation+nuclearity analysis for the same ordered spans. "
+                    "Span A precedes Span B in the document. Each option already specifies both the RST "
+                    "relation and the nuclearity configuration. Use the supplied definitions."
+                ),
+                "criteria": joint_criteria,
             }
-        )
+        }
+
+    request_payload = {"model": model, "state": state, "questions": question_payload}
+    cache_identity: dict[str, Any] = {
+        "provider": provider,
+        "input_id": item["id"],
+        "request": request_payload,
+        "scheme_sha256": scheme_hash,
+    }
+    if formulation == "joint":
+        # Keep existing independent cache keys reusable; the joint payload and tag
+        # make joint responses distinct from either formulation's prior entries.
+        cache_identity["formulation"] = formulation
+    cache_key = sha256_text(
+        canonical_json(cache_identity)
     )
     return state, question_payload, cache_key
 
@@ -250,57 +292,119 @@ def append_jsonl(path: Path, value: dict[str, Any], *, sync: bool = False) -> No
             os.fsync(destination.fileno())
 
 
-def response_answers(response_body: Any, scheme: dict[str, Any]) -> dict[str, Any]:
+def _parse_choice_answer(
+    answer: Any,
+    *,
+    task: str,
+    allowed_labels: list[str],
+) -> dict[str, Any]:
+    if not isinstance(answer, dict):
+        raise ValueError(f"Jev response is missing the {task!r} answer.")
+    label = answer.get("choice")
+    if label not in allowed_labels:
+        raise ValueError(f"Jev returned unknown {task} label {label!r}.")
+    raw_probabilities = answer.get("probabilities")
+    if not isinstance(raw_probabilities, dict):
+        raise ValueError(f"Jev response has no probability map for {task!r}.")
+    unknown = set(raw_probabilities) - set(allowed_labels)
+    missing = set(allowed_labels) - set(raw_probabilities)
+    if unknown or missing:
+        raise ValueError(
+            f"Jev {task} probabilities have unexpected labels; missing={sorted(missing)}, "
+            f"unknown={sorted(unknown)}."
+        )
+    probabilities: dict[str, float] = {}
+    for candidate in allowed_labels:
+        value = raw_probabilities[candidate]
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"Jev returned a non-numeric probability for {task} label {candidate!r}.")
+        probability = float(value)
+        if not math.isfinite(probability) or probability < 0 or probability > 1:
+            raise ValueError(f"Jev returned an invalid probability for {task} label {candidate!r}.")
+        probabilities[candidate] = probability
+    total = sum(probabilities.values())
+    if total <= 0 or not math.isclose(total, 1.0, rel_tol=0.05, abs_tol=0.05):
+        raise ValueError(f"Jev {task} probabilities do not sum approximately to 1 (sum={total}).")
+    probabilities = {key: value / total for key, value in probabilities.items()}
+
+    confidence = answer.get("confidence")
+    if isinstance(confidence, bool) or not isinstance(confidence, (int, float)):
+        raise ValueError(f"Jev response has no numeric confidence for {task!r}.")
+    confidence = float(confidence)
+    if not math.isfinite(confidence) or confidence < 0 or confidence > 1:
+        raise ValueError(f"Jev returned invalid confidence for {task!r}.")
+    return {
+        "prediction": label,
+        "probabilities": probabilities,
+        "confidence": confidence,
+    }
+
+
+def response_answers(
+    response_body: Any,
+    scheme: dict[str, Any],
+    formulation: str = "independent",
+) -> dict[str, Any]:
     if not isinstance(response_body, dict) or not isinstance(response_body.get("answers"), dict):
         raise ValueError("Jev response is missing its answers object.")
+    if formulation not in FORMULATIONS:
+        raise ValueError(f"Unsupported formulation {formulation!r}.")
+
     answers = response_body["answers"]
     result: dict[str, Any] = {}
-    for task, allowed_labels in (
-        ("relation", list(scheme["relation_by_label"])),
-        ("nuclearity", list(NUCLEARITY_LABELS)),
-    ):
-        answer = answers.get(task)
-        if not isinstance(answer, dict):
-            raise ValueError(f"Jev response is missing the {task!r} answer.")
-        label = answer.get("choice")
-        if label not in allowed_labels:
-            raise ValueError(f"Jev returned unknown {task} label {label!r}.")
-        raw_probabilities = answer.get("probabilities")
-        if not isinstance(raw_probabilities, dict):
-            raise ValueError(f"Jev response has no probability map for {task!r}.")
-        unknown = set(raw_probabilities) - set(allowed_labels)
-        missing = set(allowed_labels) - set(raw_probabilities)
-        if unknown or missing:
-            raise ValueError(
-                f"Jev {task} probabilities have unexpected labels; missing={sorted(missing)}, "
-                f"unknown={sorted(unknown)}."
+    if formulation == "independent":
+        for task, allowed_labels in (
+            ("relation", list(scheme["relation_by_label"])),
+            ("nuclearity", list(NUCLEARITY_LABELS)),
+        ):
+            result[task] = _parse_choice_answer(
+                answers.get(task),
+                task=task,
+                allowed_labels=allowed_labels,
             )
-        probabilities: dict[str, float] = {}
-        for candidate in allowed_labels:
-            value = raw_probabilities[candidate]
-            if isinstance(value, bool) or not isinstance(value, (int, float)):
-                raise ValueError(f"Jev returned a non-numeric probability for {task} label {candidate!r}.")
-            probability = float(value)
-            if not math.isfinite(probability) or probability < 0 or probability > 1:
-                raise ValueError(f"Jev returned an invalid probability for {task} label {candidate!r}.")
-            probabilities[candidate] = probability
-        total = sum(probabilities.values())
-        if total <= 0 or not math.isclose(total, 1.0, rel_tol=0.05, abs_tol=0.05):
-            raise ValueError(f"Jev {task} probabilities do not sum approximately to 1 (sum={total}).")
-        probabilities = {key: value / total for key, value in probabilities.items()}
-
-        confidence = answer.get("confidence")
-        if isinstance(confidence, bool) or not isinstance(confidence, (int, float)):
-            raise ValueError(f"Jev response has no numeric confidence for {task!r}.")
-        confidence = float(confidence)
-        if not math.isfinite(confidence) or confidence < 0 or confidence > 1:
-            raise ValueError(f"Jev returned invalid confidence for {task!r}.")
-        result[task] = {
-            "prediction": label,
-            "probabilities": probabilities,
-            "confidence": confidence,
+    else:
+        inventory = joint_label_inventory(scheme)
+        joint_answer = _parse_choice_answer(
+            answers.get("relation_nuclearity"),
+            task="relation_nuclearity",
+            allowed_labels=list(inventory),
+        )
+        predicted_relation, predicted_nuclearity = inventory[joint_answer["prediction"]]
+        joint_probabilities = joint_answer["probabilities"]
+        relation_probabilities = {
+            relation_label: sum(
+                joint_probabilities[joint_label]
+                for joint_label, (candidate_relation, _) in inventory.items()
+                if candidate_relation == relation_label
+            )
+            for relation_label in scheme["relation_by_label"]
         }
-    return {"answers": result, "response_model": response_body.get("model")}
+        nuclearity_probabilities = {
+            nuclearity_label: sum(
+                joint_probabilities[joint_label]
+                for joint_label, (_, candidate_nuclearity) in inventory.items()
+                if candidate_nuclearity == nuclearity_label
+            )
+            for nuclearity_label in NUCLEARITY_LABELS
+        }
+        result = {
+            "relation": {
+                "prediction": predicted_relation,
+                "probabilities": relation_probabilities,
+            },
+            "nuclearity": {
+                "prediction": predicted_nuclearity,
+                "probabilities": nuclearity_probabilities,
+            },
+            "joint": joint_answer,
+        }
+    parsed = {
+        "answers": result,
+        "response_model": response_body.get("model"),
+    }
+    if formulation == "joint":
+        parsed["formulation"] = formulation
+    return parsed
 
 
 def prediction_record(
@@ -317,8 +421,10 @@ def prediction_record(
 ) -> dict[str, Any]:
     relation = parsed["answers"]["relation"]
     nuclearity = parsed["answers"]["nuclearity"]
-    return {
+    formulation = parsed.get("formulation", "independent")
+    record = {
         "input_id": item["id"],
+        "formulation": formulation,
         "provider": provider,
         "model": model,
         "response_model": parsed.get("response_model"),
@@ -327,16 +433,30 @@ def prediction_record(
         "gold_relation": item["gold_relation"],
         "predicted_relation": relation["prediction"],
         "relation_probabilities": relation["probabilities"],
-        "relation_confidence": relation["confidence"],
         "gold_nuclearity": item["gold_nuclearity"],
         "predicted_nuclearity": nuclearity["prediction"],
         "nuclearity_probabilities": nuclearity["probabilities"],
-        "nuclearity_confidence": nuclearity["confidence"],
         "api_latency_ms": cache_entry["api_latency_ms"],
         "cache_hit": cache_hit,
         "request_id": cache_entry.get("request_id"),
         "response_cache_key": cache_key,
     }
+    if formulation == "independent":
+        record["relation_confidence"] = relation["confidence"]
+        record["nuclearity_confidence"] = nuclearity["confidence"]
+    elif formulation == "joint":
+        joint = parsed["answers"]["joint"]
+        record.update(
+            {
+                "gold_joint": f"{item['gold_relation']}_{item['gold_nuclearity']}",
+                "predicted_joint": joint["prediction"],
+                "joint_probabilities": joint["probabilities"],
+                "joint_confidence": joint["confidence"],
+            }
+        )
+    else:
+        raise ValueError(f"Unsupported formulation {formulation!r}.")
+    return record
 
 
 def evaluate_task(
@@ -396,11 +516,15 @@ def evaluate_task(
     }
 
 
-def evaluate_predictions(predictions: list[dict[str, Any]], relation_labels: list[str]) -> dict[str, Any]:
+def evaluate_predictions(
+    predictions: list[dict[str, Any]],
+    relation_labels: list[str],
+    joint_labels: list[str] | None = None,
+) -> dict[str, Any]:
     latencies = [float(row["api_latency_ms"]) for row in predictions]
     ordered_latencies = sorted(latencies)
     p95_index = max(0, math.ceil(0.95 * len(ordered_latencies)) - 1)
-    return {
+    report = {
         "n_instances": len(predictions),
         "relation": evaluate_task(
             predictions,
@@ -425,6 +549,22 @@ def evaluate_predictions(predictions: list[dict[str, Any]], relation_labels: lis
         "macro_f1_labels": "labels present in gold or predictions",
         "brier_score": "multiclass sum of squared probability errors, averaged over instances",
     }
+    joint_predictions = [
+        row for row in predictions if row.get("formulation") == "joint"
+    ]
+    if joint_predictions:
+        if len(joint_predictions) != len(predictions):
+            raise ValueError("Cannot evaluate a prediction file containing mixed formulations.")
+        if joint_labels is None:
+            raise ValueError("Joint-label inventory is required to evaluate joint predictions.")
+        report["joint"] = evaluate_task(
+            joint_predictions,
+            gold_field="gold_joint",
+            predicted_field="predicted_joint",
+            probabilities_field="joint_probabilities",
+            labels=joint_labels,
+        )
+    return report
 
 
 def read_predictions(path: Path) -> list[dict[str, Any]]:
@@ -450,13 +590,14 @@ def run(args: argparse.Namespace) -> None:
             "Existing experiment outputs are not overwritten; choose a new output path."
         )
 
+    formulation = getattr(args, "formulation", "independent")
     scheme, scheme_hash = load_scheme(args.relations)
     items = load_items(args.input, scheme["relation_by_label"])
     cache = read_cache(args.cache)
     prepared = []
     for item in items:
         state, question_payload, cache_key = make_request(
-            item, scheme, args.provider, args.model, scheme_hash
+            item, scheme, args.provider, args.model, scheme_hash, formulation
         )
         prepared.append((item, state, question_payload, cache_key, cache.get(cache_key)))
 
@@ -561,7 +702,7 @@ def run(args: argparse.Namespace) -> None:
                     response_body = json.loads(cache_entry["raw_response_text"])
                 except json.JSONDecodeError as exc:
                     raise ValueError(f"Cached Jev response for {item['id']!r} is not valid JSON.") from exc
-                parsed = response_answers(response_body, scheme)
+                parsed = response_answers(response_body, scheme, formulation)
                 record = prediction_record(
                     item,
                     parsed,
@@ -577,14 +718,22 @@ def run(args: argparse.Namespace) -> None:
                 destination.flush()
                 predictions.append(record)
 
-    report = evaluate_predictions(predictions, list(scheme["relation_by_label"]))
+    report = evaluate_predictions(
+        predictions,
+        list(scheme["relation_by_label"]),
+        list(joint_label_inventory(scheme)),
+    )
     print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
 
 
 def evaluate(args: argparse.Namespace) -> None:
     scheme, _ = load_scheme(args.relations)
     predictions = read_predictions(args.predictions)
-    report = evaluate_predictions(predictions, list(scheme["relation_by_label"]))
+    report = evaluate_predictions(
+        predictions,
+        list(scheme["relation_by_label"]),
+        list(joint_label_inventory(scheme)),
+    )
     print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
 
 
@@ -599,6 +748,12 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--output", type=Path, default=Path("predictions.jsonl"))
     run_parser.add_argument("--cache", type=Path, default=Path("cache/raw_responses.jsonl"))
     run_parser.add_argument("--relations", type=Path, default=DEFAULT_RELATIONS)
+    run_parser.add_argument(
+        "--formulation",
+        choices=FORMULATIONS,
+        default="independent",
+        help="Prediction formulation (default: independent).",
+    )
     run_parser.add_argument(
         "--provider",
         choices=tuple(PROVIDERS),
